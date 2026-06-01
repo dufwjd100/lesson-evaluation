@@ -9,10 +9,10 @@ const CURRICULUM_SHEET_ID = '18omuRClflSU5JkQLlbXmfiqQyu8tOnvvG2TP8KWFMwA';
 const ATTENDANCE_TAB      = '출석부';
 const CURRICULUM_TAB      = '드럼_커리큘럼_V4';
 
-// Anthropic Claude API 키 (스크립트 속성에서 가져옴)
+// OpenAI API 키 (스크립트 속성에서 가져옴)
 function getApiKey() {
-  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
-  if (!key) throw new Error('스크립트 속성에 ANTHROPIC_API_KEY 가 설정되어 있지 않습니다.');
+  const key = PropertiesService.getScriptProperties().getProperty('OPENAI_API_KEY');
+  if (!key) throw new Error('스크립트 속성에 OPENAI_API_KEY 가 설정되어 있지 않습니다.');
   return key;
 }
 
@@ -84,7 +84,7 @@ function generateDrumEvaluations() {
         const matchedSteps = matchCurriculum(recentLessons, curriculum);
 
         // 7. AI 초안 생성
-        const draft = callClaudeAPI(recentLessons, matchedSteps, curriculum);
+        const draft = callOpenAIAPI(recentLessons, matchedSteps, curriculum);
 
         // 8. 출석부에 저장 (row index → sheet row: +2 because 1-indexed and header)
         const sheetRow = targetIdx + 2;
@@ -211,8 +211,8 @@ function matchCurriculum(lessons, curriculum) {
   return scores.slice(0, 3).map(s => s.step);
 }
 
-// ───── Claude API 호출 ─────
-function callClaudeAPI(lessons, matchedSteps, curriculum) {
+// ───── OpenAI API 호출 ─────
+function callOpenAIAPI(lessons, matchedSteps, curriculum) {
   const apiKey = getApiKey();
 
   const lessonSummary = lessons.map((l, i) =>
@@ -245,29 +245,51 @@ ${stepSummary || '(매칭된 커리큘럼 없음)'}
 평가 초안만 출력하세요. 설명이나 제목 없이 본문만 작성합니다.`;
 
   const payload = {
-    model      : 'claude-opus-4-8',
-    max_tokens : 600,
-    messages   : [{ role: 'user', content: prompt }],
+    model: 'gpt-4.1-mini',
+    input: prompt,
+    max_output_tokens: 600,
   };
 
   const options = {
-    method     : 'post',
+    method: 'post',
     contentType: 'application/json',
-    headers    : {
-      'x-api-key'        : apiKey,
-      'anthropic-version': '2023-06-01',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
     },
-    payload    : JSON.stringify(payload),
+    payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
 
-  const response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', options);
-  const code     = response.getResponseCode();
-  const body     = JSON.parse(response.getContentText());
+  const response = UrlFetchApp.fetch('https://api.openai.com/v1/responses', options);
+  const code = response.getResponseCode();
+  const rawText = response.getContentText();
+  const body = JSON.parse(rawText);
 
-  if (code !== 200) {
-    throw new Error(`API 오류 (${code}): ${body.error?.message || response.getContentText()}`);
+  if (code < 200 || code >= 300) {
+    throw new Error(`API 오류 (${code}): ${body.error?.message || rawText}`);
   }
 
-  return body.content[0].text.trim();
+  const outputText = extractOpenAIText(body);
+  if (!outputText) {
+    throw new Error('API 응답에서 평가 초안 텍스트를 찾을 수 없습니다.');
+  }
+
+  return outputText.trim();
+}
+
+// ───── OpenAI 응답 텍스트 추출 ─────
+function extractOpenAIText(body) {
+  if (body.output_text) return String(body.output_text).trim();
+
+  if (!body.output || !Array.isArray(body.output)) return '';
+
+  const parts = [];
+  body.output.forEach(item => {
+    if (!item.content || !Array.isArray(item.content)) return;
+    item.content.forEach(content => {
+      if (content.text) parts.push(String(content.text));
+    });
+  });
+
+  return parts.join('\n').trim();
 }
