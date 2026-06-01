@@ -114,6 +114,18 @@ function buildColIndex(headers) {
   const map = {};
   headers.forEach((h, i) => { map[h] = i; });
 
+  // 내부 코드명은 유지하고, 실제 시트 헤더명만 별칭으로 연결한다.
+  const aliases = {
+    수업일자: ['수업일자', '날짜'],
+    출결: ['출결', '출결상황'],
+  };
+
+  Object.keys(aliases).forEach(key => {
+    if (map[key] !== undefined) return;
+    const found = aliases[key].find(name => map[name] !== undefined);
+    if (found) map[key] = map[found];
+  });
+
   const required = ['고유번호', '수업명', '진행회차', '수업일자', '수업내용', '수업곡', '과제', '레슨평가', '레슨평가_초안', '출결'];
   for (const col of required) {
     if (map[col] === undefined) {
