@@ -275,20 +275,53 @@ function loadCurriculum(sheet) {
 
 // ───── 커리큘럼 매칭 ─────
 function matchCurriculum(lessons, curriculum) {
-  const allContent = lessons.map(l => l.content).join(' ');
+  const allLessonText = lessons.map(l => [
+    l.content,
+    l.song,
+    l.homework,
+    l.eval,
+  ].join(' ')).join(' ');
+  const normalizedLessonText = normalizeMatchText(allLessonText);
 
-  // 각 Step의 키워드 매칭 점수 계산
+  // 수업내용뿐 아니라 수업곡, 과제, 기존평가까지 모두 사용해 매칭한다.
   const scores = curriculum.map(step => {
-    if (!step.keywords) return { step, score: 0 };
-    const kws    = step.keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean);
-    const score  = kws.filter(kw => allContent.includes(kw)).length;
-    return { step, score };
+    const keywordText = String(step.keywords || '').trim();
+    if (!keywordText) return { step, score: 0, matchedKeywords: [] };
+
+    const keywords = keywordText
+      .split(/[,，\n]+/)
+      .map(k => k.trim())
+      .filter(Boolean);
+
+    const matchedKeywords = keywords.filter(kw => {
+      const normalizedKeyword = normalizeMatchText(kw);
+      return normalizedKeyword && normalizedLessonText.includes(normalizedKeyword);
+    });
+
+    return {
+      step,
+      score: matchedKeywords.length,
+      matchedKeywords,
+    };
   }).filter(s => s.score > 0);
 
   scores.sort((a, b) => b.score - a.score);
 
-  // 1위 + 보조 최대 2개
-  return scores.slice(0, 3).map(s => s.step);
+  // 1위 + 보조 최대 2개. 매칭 키워드도 같이 넘겨 프롬프트에서 근거로 쓰게 한다.
+  return scores.slice(0, 3).map(s => ({
+    ...s.step,
+    matchedKeywords: s.matchedKeywords,
+  }));
+}
+
+// ───── 매칭용 텍스트 정규화 ─────
+function normalizeMatchText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/번/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[()\[\]{}'"“”‘’.,，:：;；/\\|_\-–—]/g, '')
+    .trim();
 }
 
 // ───── OpenAI API 호출 ─────
@@ -300,34 +333,43 @@ function callOpenAIAPI(lessons, matchedSteps, curriculum) {
   ).join('\n');
 
   const stepSummary = matchedSteps.map(s =>
-    `Step ${s.step}\n핵심목표: ${s.coreGoal}\n기본기: ${s.basicEasy}\n시퀀스: ${s.sequenceEasy}\n평가문장: ${s.evalSentence}\n미래방향: ${s.futureSentence}`
+    `Step ${s.step}\n매칭키워드: ${(s.matchedKeywords || []).join(', ') || '없음'}\n핵심목표: ${s.coreGoal}\n기본기: ${s.basicEasy}\n시퀀스: ${s.sequenceEasy}\n평가문장: ${s.evalSentence}\n미래방향: ${s.futureSentence}`
   ).join('\n\n');
 
-  const prompt = `당신은 음악학원의 드럼 강사입니다. 아래 최근 4회 수업기록과 커리큘럼 정보를 바탕으로 학부모용 레슨평가 초안을 작성해 주세요.
+  const prompt = `당신은 음악학원의 드럼 강사이자 원장 검토용 평가서 초안 작성자입니다. 아래 최근 4회 수업기록과 커리큘럼 매칭 정보를 바탕으로 학부모용 레슨평가 초안을 작성해 주세요.
 
 【최근 수업기록】
 ${lessonSummary}
 
-【커리큘럼 참고】
+【매칭된 커리큘럼】
 ${stepSummary || '(매칭된 커리큘럼 없음)'}
 
-【작성 규칙】
-- 3문단으로 구성
-  1문단: 최근 4회 동안 무엇을 배웠는지 (수업내용 근거 기반)
-  2문단: 좋아진 점과 현재 상태
-  3문단: 앞으로의 수업 방향
-- 학부모가 읽는 글이므로 전문용어를 쉬운 말로 풀어씀
-- 따뜻하지만 과장하지 않음 ("정말 대단해요" 식의 과도한 칭찬 금지)
-- "잘하고 있습니다"만 반복하지 않음
-- 수업내용에 근거하지 않은 내용 추가 금지
-- 분량: 200~300자 내외
+【먼저 판단할 것】
+- 최근 4회 수업에서 반복된 핵심 주제는 무엇인지
+- 학생이 어려워한 지점이나 아직 덜 소화한 부분은 무엇인지
+- 이전보다 나아진 구체적인 장면은 무엇인지
+- 다음 4회 수업에서 이어갈 실제 방향은 무엇인지
 
-평가 초안만 출력하세요. 설명이나 제목 없이 본문만 작성합니다.`;
+【작성 규칙】
+- 최종 출력은 학부모에게 보낼 평가 초안 본문만 작성
+- 3문단으로 구성
+  1문단: 최근 4회 동안 실제로 다룬 내용
+  2문단: 좋아진 점과 아직 필요한 부분
+  3문단: 앞으로의 수업 방향
+- 매칭된 커리큘럼의 평가문장과 미래방향을 반드시 참고하되, 수업기록과 맞는 부분만 자연스럽게 반영
+- 매 문단마다 최근 수업기록에 나온 구체 단어를 최소 1개 포함
+- "리듬감이 좋아졌습니다", "안정적인 연주력이 기대됩니다"처럼 어디에나 쓸 수 있는 표현만 단독으로 쓰지 말 것
+- 수업기록에 없는 추상적 칭찬이나 과장 금지
+- 학생 이름이 수업기록에 드러나면 자연스럽게 1회만 사용
+- 학부모가 읽었을 때 “우리 아이 수업 이야기”처럼 느껴지게 작성
+- 분량: 250~400자 내외
+
+평가 초안만 출력하세요. 분석 과정, 제목, 번호는 출력하지 않습니다.`;
 
   const payload = {
     model: 'gpt-4.1-mini',
     input: prompt,
-    max_output_tokens: 600,
+    max_output_tokens: 700,
   };
 
   const options = {
