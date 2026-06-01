@@ -20,11 +20,79 @@ function getApiKey() {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🥁 레슨평가')
-    .addItem('드럼 레슨평가 초안 생성', 'generateDrumEvaluations')
+    .addItem('선택한 행만 레슨평가 초안 생성', 'generateSelectedDrumEvaluation')
+    .addSeparator()
+    .addItem('전체 대상 레슨평가 초안 생성', 'generateDrumEvaluations')
     .addToUi();
 }
 
-// ───── 메인 ─────
+// ───── 선택한 행 1건만 처리 ─────
+function generateSelectedDrumEvaluation() {
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const activeSheet = SpreadsheetApp.getActiveSheet();
+    if (!activeSheet || activeSheet.getName() !== ATTENDANCE_TAB) {
+      throw new Error(`"${ATTENDANCE_TAB}" 탭에서 처리할 행을 선택한 뒤 실행해 주세요.`);
+    }
+
+    const selectedRow = activeSheet.getActiveRange().getRow();
+    if (selectedRow <= 1) {
+      throw new Error('헤더가 아닌 실제 수업 기록 행을 선택해 주세요.');
+    }
+
+    const headers = activeSheet.getRange(1, 1, 1, activeSheet.getLastColumn())
+      .getValues()[0]
+      .map(h => String(h).trim());
+    const COL = buildColIndex(headers);
+
+    const lastRow = activeSheet.getLastRow();
+    const allData = activeSheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    const targetIdx = selectedRow - 2;
+    const targetRow = allData[targetIdx];
+
+    if (!targetRow) throw new Error('선택한 행의 데이터를 찾을 수 없습니다.');
+
+    const uid = String(targetRow[COL.고유번호] || '').trim();
+    const lessonName = String(targetRow[COL.수업명] || '').trim();
+    const currentDraft = String(targetRow[COL.레슨평가_초안] || '').trim();
+
+    if (!uid) throw new Error('선택한 행에 고유번호가 없습니다.');
+    if (!lessonName.includes('드럼')) throw new Error('선택한 행의 수업명이 드럼 수업이 아닙니다.');
+
+    if (currentDraft) {
+      const overwrite = ui.alert(
+        '이미 레슨평가_초안이 있습니다. 덮어쓸까요?',
+        ui.ButtonSet.YES_NO
+      );
+      if (overwrite !== ui.Button.YES) return;
+    }
+
+    const curriculumSS = SpreadsheetApp.openById(CURRICULUM_SHEET_ID);
+    const curriculumSheet = curriculumSS.getSheetByName(CURRICULUM_TAB);
+    if (!curriculumSheet) throw new Error(`"${CURRICULUM_TAB}" 탭을 찾을 수 없습니다.`);
+
+    const curriculum = loadCurriculum(curriculumSheet);
+    const recentLessons = getRecentLessons(allData, COL, uid, targetIdx);
+    if (recentLessons.length === 0) {
+      throw new Error('선택한 학생의 최근 수업기록을 찾을 수 없습니다.');
+    }
+
+    const matchedSteps = matchCurriculum(recentLessons, curriculum);
+    const draft = callOpenAIAPI(recentLessons, matchedSteps, curriculum);
+
+    activeSheet.getRange(selectedRow, COL.레슨평가_초안 + 1).setValue(draft);
+    SpreadsheetApp.flush();
+
+    ui.alert(`선택한 행 레슨평가 초안 생성 완료\n행: ${selectedRow}\n고유번호: ${uid}`);
+
+  } catch (e) {
+    ui.alert('오류: ' + e.message);
+    console.error(e);
+  }
+}
+
+// ───── 전체 대상 처리 ─────
 function generateDrumEvaluations() {
   const ui = SpreadsheetApp.getUi();
 
