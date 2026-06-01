@@ -239,6 +239,7 @@ function getRecentLessons(allData, COL, uid, upToIdx) {
     lessons.push({
       date    : row[COL.수업일자],
       seq     : row[COL.진행회차],
+      name    : COL.이름 !== undefined ? String(row[COL.이름] || '').trim() : '',
       content : String(row[COL.수업내용] || '').trim(),
       song    : String(row[COL.수업곡]   || '').trim(),
       homework: String(row[COL.과제]     || '').trim(),
@@ -263,17 +264,38 @@ function loadCurriculum(sheet) {
   headers.forEach((h, i) => { COL[h] = i; });
 
   return data.map(row => ({
-    step          : String(row[COL['Step']]              || '').trim(),
-    coreGoal      : String(row[COL['핵심목표']]           || '').trim(),
-    basicEasy     : String(row[COL['기본기 쉬운해석']]    || '').trim(),
-    sequenceEasy  : String(row[COL['시퀀스 쉬운해석']]   || '').trim(),
-    evalSentence  : String(row[COL['평가서 조합 문장']]  || '').trim(),
-    futureSentence: String(row[COL['미래지향 문장']]      || '').trim(),
-    keywords      : String(row[COL['자동화 검색 키워드']] || '').trim(),
+    section          : getCellValue(row, COL, ['구간']),
+    step             : getCellValue(row, COL, ['Step']),
+    stepName         : getCellValue(row, COL, ['단계명']),
+    stepRole         : getCellValue(row, COL, ['Step 역할']),
+    coreGoal         : getCellValue(row, COL, ['핵심목표']),
+    basicArea        : getCellValue(row, COL, ['기본기 세부영역']),
+    relatedDrill     : getCellValue(row, COL, ['관련 Drill']),
+    basicEasy        : getCellValue(row, COL, ['기본기 쉬운해석']),
+    sequenceArea     : getCellValue(row, COL, ['시퀀스 세부영역']),
+    relatedPattern   : getCellValue(row, COL, ['관련 Cell/Groove/Fill']),
+    sequenceEasy     : getCellValue(row, COL, ['시퀀스 쉬운해석']),
+    songApply        : getCellValue(row, COL, ['곡 적용 기준']),
+    tempoHint        : getCellValue(row, COL, ['템포·속도 힌트']),
+    contextKeywords  : getCellValue(row, COL, ['곡/수업 맥락 키워드']),
+    interpretPoint   : getCellValue(row, COL, ['수업내용 해석 포인트']),
+    evalSentence     : getCellValue(row, COL, ['평가서 조합 문장']),
+    futureSentence   : getCellValue(row, COL, ['미래지향 문장']),
+    keywords         : getCellValue(row, COL, ['자동화 검색 키워드']),
+    strongCandidates : getCellValue(row, COL, ['강매칭 후보']),
+    subCandidates    : getCellValue(row, COL, ['보조매칭 후보']),
+    memo             : getCellValue(row, COL, ['메모']),
   })).filter(r => r.step !== '');
 }
 
-// ───── 커리큘럼 매칭 ─────
+function getCellValue(row, COL, names) {
+  for (const name of names) {
+    if (COL[name] !== undefined) return String(row[COL[name]] || '').trim();
+  }
+  return '';
+}
+
+// ───── 커리큘럼 용어 해석 매칭 ─────
 function matchCurriculum(lessons, curriculum) {
   const allLessonText = lessons.map(l => [
     l.content,
@@ -283,42 +305,75 @@ function matchCurriculum(lessons, curriculum) {
   ].join(' ')).join(' ');
   const normalizedLessonText = normalizeMatchText(allLessonText);
 
-  // 수업내용뿐 아니라 수업곡, 과제, 기존평가까지 모두 사용해 매칭한다.
+  // 목적: Step 추정이 아니라, 출석부에 적힌 용어를 커리큘럼 쉬운해석으로 풀어내기 위한 자료를 찾는다.
   const scores = curriculum.map(step => {
-    const keywordText = String(step.keywords || '').trim();
-    if (!keywordText) return { step, score: 0, matchedKeywords: [] };
+    const strongTerms = splitTerms([
+      step.keywords,
+      step.strongCandidates,
+      step.relatedDrill,
+      step.relatedPattern,
+    ].join(','));
+    const subTerms = splitTerms([
+      step.subCandidates,
+      step.contextKeywords,
+      step.basicArea,
+      step.sequenceArea,
+      step.stepName,
+    ].join(','));
 
-    const keywords = keywordText
-      .split(/[,，\n]+/)
-      .map(k => k.trim())
-      .filter(Boolean);
-
-    const matchedKeywords = keywords.filter(kw => {
-      const normalizedKeyword = normalizeMatchText(kw);
-      return normalizedKeyword && normalizedLessonText.includes(normalizedKeyword);
-    });
+    const strongMatches = findMatchedTerms(strongTerms, normalizedLessonText);
+    const subMatches = findMatchedTerms(subTerms, normalizedLessonText);
+    const score = strongMatches.length * 3 + subMatches.length;
 
     return {
       step,
-      score: matchedKeywords.length,
-      matchedKeywords,
+      score,
+      strongMatches,
+      subMatches,
+      allMatches: [...strongMatches, ...subMatches],
     };
   }).filter(s => s.score > 0);
 
   scores.sort((a, b) => b.score - a.score);
 
-  // 1위 + 보조 최대 2개. 매칭 키워드도 같이 넘겨 프롬프트에서 근거로 쓰게 한다.
-  return scores.slice(0, 3).map(s => ({
+  return scores.slice(0, 4).map(s => ({
     ...s.step,
-    matchedKeywords: s.matchedKeywords,
+    score: s.score,
+    matchedKeywords: uniqueList(s.allMatches).slice(0, 10),
+    strongMatches: uniqueList(s.strongMatches).slice(0, 10),
+    subMatches: uniqueList(s.subMatches).slice(0, 10),
   }));
+}
+
+function splitTerms(text) {
+  return String(text || '')
+    .split(/[,，\n]+/)
+    .map(t => t.trim())
+    .filter(Boolean);
+}
+
+function findMatchedTerms(terms, normalizedLessonText) {
+  return terms.filter(term => {
+    const normalizedTerm = normalizeMatchText(term);
+    return normalizedTerm && normalizedLessonText.includes(normalizedTerm);
+  });
+}
+
+function uniqueList(items) {
+  return [...new Set(items.filter(Boolean))];
 }
 
 // ───── 매칭용 텍스트 정규화 ─────
 function normalizeMatchText(text) {
   return String(text || '')
     .toLowerCase()
+    .replace(/플로우/g, 'cell')
+    .replace(/셀/g, 'cell')
+    .replace(/드릴/g, 'drill')
+    .replace(/그루브/g, 'groove')
+    .replace(/필인/g, 'fill')
     .replace(/번/g, '')
+    .replace(/#/g, '')
     .replace(/\s+/g, '')
     .replace(/[()\[\]{}'"“”‘’.,，:：;；/\\|_\-–—]/g, '')
     .trim();
@@ -328,48 +383,62 @@ function normalizeMatchText(text) {
 function callOpenAIAPI(lessons, matchedSteps, curriculum) {
   const apiKey = getApiKey();
 
+  const studentName = lessons.map(l => l.name).find(Boolean) || '학생';
+
   const lessonSummary = lessons.map((l, i) =>
     `[${i + 1}회] 날짜:${l.date} 수업내용:${l.content} 수업곡:${l.song} 과제:${l.homework} 기존평가:${l.eval}`
   ).join('\n');
 
-  const stepSummary = matchedSteps.map(s =>
-    `Step ${s.step}\n매칭키워드: ${(s.matchedKeywords || []).join(', ') || '없음'}\n핵심목표: ${s.coreGoal}\n기본기: ${s.basicEasy}\n시퀀스: ${s.sequenceEasy}\n평가문장: ${s.evalSentence}\n미래방향: ${s.futureSentence}`
+  const termExplanationSummary = matchedSteps.map(s =>
+    `매칭단계: ${s.step} ${s.stepName}\n출석부에서 발견된 용어: ${(s.matchedKeywords || []).join(', ') || '없음'}\n핵심목표: ${s.coreGoal}\n기본기 용어 해석: ${s.basicEasy}\n시퀀스/셀/그루브/필인 해석: ${s.sequenceEasy}\n수업내용 해석 포인트: ${s.interpretPoint}\n평가서에 풀어쓸 문장: ${s.evalSentence}\n다음 수업 방향 문장: ${s.futureSentence}`
   ).join('\n\n');
 
-  const prompt = `당신은 음악학원의 드럼 강사이자 원장 검토용 평가서 초안 작성자입니다. 아래 최근 4회 수업기록과 커리큘럼 매칭 정보를 바탕으로 학부모용 레슨평가 초안을 작성해 주세요.
+  const prompt = `당신은 음악학원의 드럼 강사이자 원장 검토용 레슨평가 초안 작성자입니다.
+목표는 출석부의 전문 수업 용어를 커리큘럼 통일 탭의 쉬운해석으로 풀어서, 학부모가 이해할 수 있는 레슨평가서를 작성하는 것입니다.
+
+【학생】
+${studentName}
 
 【최근 수업기록】
 ${lessonSummary}
 
-【매칭된 커리큘럼】
-${stepSummary || '(매칭된 커리큘럼 없음)'}
+【출석부 용어 해석 자료: 커리큘럼 통일 탭 기준】
+${termExplanationSummary || '(매칭된 용어 해석 자료 없음)'}
 
-【먼저 판단할 것】
-- 최근 4회 수업에서 반복된 핵심 주제는 무엇인지
-- 학생이 어려워한 지점이나 아직 덜 소화한 부분은 무엇인지
-- 이전보다 나아진 구체적인 장면은 무엇인지
-- 다음 4회 수업에서 이어갈 실제 방향은 무엇인지
+【가장 중요한 작성 원칙】
+- 출석부에 적힌 Drill, Cell, Groove, Fill, 플로우, 드릴, 셀 같은 용어를 그대로 나열하는 것이 목적이 아닙니다.
+- 위 용어들이 커리큘럼에서 어떤 연습을 뜻하는지 풀어서 설명하는 것이 목적입니다.
+- 예: "Drill #14"처럼 쓰기보다, "손의 순서와 강세를 정리해 필인을 자연스럽게 연결하는 연습"처럼 설명합니다.
+- 예: "Cell #13"처럼 쓰기보다, "기본 비트에서 짧은 필인으로 넘어가는 흐름을 익히는 연습"처럼 설명합니다.
+- 단, 수업곡명이나 학생이 실제로 다룬 대표 용어는 1~2개 정도만 자연스럽게 남겨도 됩니다.
 
-【작성 규칙】
-- 최종 출력은 학부모에게 보낼 평가 초안 본문만 작성
-- 3문단으로 구성
-  1문단: 최근 4회 동안 실제로 다룬 내용
-  2문단: 좋아진 점과 아직 필요한 부분
-  3문단: 앞으로의 수업 방향
-- 매칭된 커리큘럼의 평가문장과 미래방향을 반드시 참고하되, 수업기록과 맞는 부분만 자연스럽게 반영
-- 매 문단마다 최근 수업기록에 나온 구체 단어를 최소 1개 포함
-- "리듬감이 좋아졌습니다", "안정적인 연주력이 기대됩니다"처럼 어디에나 쓸 수 있는 표현만 단독으로 쓰지 말 것
-- 수업기록에 없는 추상적 칭찬이나 과장 금지
-- 학생 이름이 수업기록에 드러나면 자연스럽게 1회만 사용
-- 학부모가 읽었을 때 “우리 아이 수업 이야기”처럼 느껴지게 작성
-- 분량: 250~400자 내외
+【작성 순서】
+1. 최근 4회 수업기록에서 실제로 반복된 용어와 수업곡을 확인합니다.
+2. 매칭된 커리큘럼의 기본기 용어 해석, 시퀀스 해석, 수업내용 해석 포인트를 참고합니다.
+3. 전문용어를 학부모용 쉬운 말로 바꿉니다.
+4. 학생의 현재 상태와 다음 수업 방향을 평가서 문장으로 정리합니다.
 
-평가 초안만 출력하세요. 분석 과정, 제목, 번호는 출력하지 않습니다.`;
+【문단 구성】
+- 1문단: 최근 4회 동안 어떤 연습을 했는지. 출석부 용어를 쉬운 말로 풀어서 설명합니다.
+- 2문단: 좋아진 점과 아직 더 필요한 부분을 수업기록 근거로 씁니다.
+- 3문단: 다음 수업 방향을 커리큘럼의 미래지향 문장을 참고해 씁니다.
+
+【금지】
+- "리듬감이 좋아졌습니다", "안정적인 연주력이 기대됩니다"처럼 어디에나 붙는 말만 쓰지 마세요.
+- 커리큘럼 해석 없이 출석부 용어만 나열하지 마세요.
+- 수업기록에 없는 과장된 칭찬을 하지 마세요.
+- 분석 과정, 제목, 번호를 출력하지 마세요.
+
+【분량】
+- 3문단
+- 총 300~500자 내외
+
+평가 초안 본문만 출력하세요.`;
 
   const payload = {
     model: 'gpt-4.1-mini',
     input: prompt,
-    max_output_tokens: 700,
+    max_output_tokens: 800,
   };
 
   const options = {
