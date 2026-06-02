@@ -9,10 +9,10 @@ const CURRICULUM_SHEET_ID = '18omuRClflSU5JkQLlbXmfiqQyu8tOnvvG2TP8KWFMwA';
 const ATTENDANCE_TAB      = '출석부';
 const CURRICULUM_TAB      = '드럼_커리큘럼_V4';
 
-// OpenAI API 키 (스크립트 속성에서 가져옴)
+// Anthropic API 키 (스크립트 속성에서 가져옴)
 function getApiKey() {
-  const key = PropertiesService.getScriptProperties().getProperty('OPENAI_API_KEY');
-  if (!key) throw new Error('스크립트 속성에 OPENAI_API_KEY 가 설정되어 있지 않습니다.');
+  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
+  if (!key) throw new Error('스크립트 속성에 ANTHROPIC_API_KEY 가 설정되어 있지 않습니다.');
   return key;
 }
 
@@ -379,7 +379,7 @@ function normalizeMatchText(text) {
     .trim();
 }
 
-// ───── OpenAI API 호출 ─────
+// ───── Claude API 호출 ─────
 function callOpenAIAPI(lessons, matchedSteps, curriculum) {
   const apiKey = getApiKey();
 
@@ -391,9 +391,8 @@ function callOpenAIAPI(lessons, matchedSteps, curriculum) {
     `매칭단계: ${s.step} ${s.stepName}\n출석부에서 발견된 용어: ${(s.matchedKeywords || []).join(', ') || '없음'}\n기본기 용어 해석: ${s.basicEasy}\n시퀀스/셀/그루브/필인 해석: ${s.sequenceEasy}\n수업내용 해석 포인트: ${s.interpretPoint}\n평가서에 풀어쓸 문장: ${s.evalSentence}\n다음 수업 방향 문장: ${s.futureSentence}`
   ).join('\n\n');
 
- const prompt = `당신은 드럼 레슨 기록을 드럼을 배우지 않은 학부모와 성인회원에게 전달하는 레슨 리포트 작성자입니다.
-이 글을 읽는 사람은 "드릴 21-9", "셀 13", "그루브 5" 같은 커리큘럼 용어를 전혀 모릅니다.
-따라서 당신의 핵심 임무는, 수업기록에 적힌 코드와 번호를 그대로 옮기는 것이 아니라, 그 연습이 실제로 어떤 동작이나 감각을 익히는 것인지 쉬운 말로 풀어서 전달하는 것입니다.
+  const prompt = `당신은 드럼 레슨 기록을 학부모와 성인회원 모두에게 자연스러운 짧은 레슨 리포트로 바꾸는 작성자입니다.
+핵심은 많이 설명하는 것이 아니라, 수업기록에 적힌 각 연습을 정확히 구분하고 "무엇을 하고 있는지, 무엇을 위해 하고 있는지, 다음에 무엇을 이어갈지"를 함축적으로 정리하는 것입니다.
 
 【최근 수업기록】
 ${lessonSummary}
@@ -401,19 +400,11 @@ ${lessonSummary}
 【커리큘럼 용어 해석 자료】
 ${termExplanationSummary || '(매칭된 용어 해석 자료 없음)'}
 
-【용어 번역 규칙 — 가장 중요】
-- "드릴 21-9", "셀 13", "셀 13과 14", "Drill 12-13", "Cell 7", "그루브 5", "필인 3" 같은 커리큘럼 코드·번호를 결과물에 절대 그대로 쓰지 마세요.
-- 각 연습은 위 [커리큘럼 용어 해석 자료]의 쉬운해석을 활용해, 실제로 무슨 동작·기술을 익히는 연습인지로 바꿔 쓰세요.
-- 예: "셀 13, 14를 반복했습니다"가 아니라 "양손 손가락을 번갈아 빠르게 움직여 손가락 독립성을 키우는 연습을 했습니다"처럼 씁니다.
-- 예: "드릴 21-9를 150bpm에서 연습"이 아니라 "빠른 속도에서도 일정한 타격을 유지하는 연습"처럼 씁니다.
-- 해석 자료에 없는 코드는, 코드 자체를 빼고 수업내용 문맥에서 드러나는 동작(스네어·킥 연결, 손발 분리, 하이햇 유지 등)으로 풀어 쓰세요.
-- bpm 숫자를 일일이 나열하지 마세요. "느린 템포에서 천천히", "빠른 속도로"처럼 상대적으로 표현하고, 숫자는 꼭 필요할 때 1개만 남기세요.
-
 【출력 형식】
 - 총 2문단만 작성합니다.
 - 각 문단은 1문장만 작성합니다.
 - 전체 150~230자 내외로 작성합니다.
-- 첫 문단: 수업에서 다룬 개별 연습들을 쉬운 말로 풀어서, 각 연습이 무엇을 위한 것인지.
+- 첫 문단: 수업에서 다룬 개별 연습들과 각 연습의 목적.
 - 둘째 문단: 실제 변화 또는 현재 병목 1개 + 다음 수업 방향 1개.
 - 평가 초안 본문만 출력합니다.
 
@@ -435,36 +426,41 @@ ${termExplanationSummary || '(매칭된 용어 해석 자료 없음)'}
 - "최근 수업에서는", "최근 4회의 수업에서", "이번 기간 동안", "수업을 통해"로 시작하지 마세요.
 - "기본 드럼 패턴", "기본 리듬", "기본 연습"처럼 넓고 디테일 없는 표현을 쓰지 마세요.
 - 용어를 사전처럼 정의하지 말고, 실제 수업에서 하고 있는 연습과 목적이 자연스럽게 드러나게 쓰세요.
-- 대표 곡명은 꼭 필요할 때 1개만 남기세요.
+- 대표 곡명이나 대표 용어는 꼭 필요할 때 1개만 남기세요.
 
 【금지】
 - 3문단 이상
 - 5문장 이상
-- "드릴 21-9", "셀 13", "Drill", "Cell", "그루브 5", "필인 3" 같은 커리큘럼 코드·번호의 직접 노출
-- bpm 숫자를 2개 이상 나열하는 표현
 - "리듬감이 좋아졌습니다", "안정적인 연주력이 기대됩니다" 같은 일반 표현
 - "기본 드럼 패턴", "기본 리듬", "기본기"만 단독으로 쓰는 표현
 - 서로 관련 없는 연습을 하나의 흐름처럼 엮는 표현
 - 수업기록에 없는 칭찬
 - 제목, 번호, 분석 과정`;
+
   const payload = {
-    model: 'gpt-4.1-mini',
-    input: prompt,
-    max_output_tokens: 320,
+    model: 'claude-sonnet-4-6',
+    max_tokens: 320,
     temperature: 0.1,
+    messages: [
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ],
   };
 
   const options = {
     method: 'post',
     contentType: 'application/json',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
     },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
 
-  const response = UrlFetchApp.fetch('https://api.openai.com/v1/responses', options);
+  const response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', options);
   const code = response.getResponseCode();
   const rawText = response.getContentText();
   const body = JSON.parse(rawText);
@@ -473,7 +469,7 @@ ${termExplanationSummary || '(매칭된 용어 해석 자료 없음)'}
     throw new Error(`API 오류 (${code}): ${body.error?.message || rawText}`);
   }
 
-  const outputText = extractOpenAIText(body);
+  const outputText = extractClaudeText(body);
   if (!outputText) {
     throw new Error('API 응답에서 평가 초안 텍스트를 찾을 수 없습니다.');
   }
@@ -481,18 +477,15 @@ ${termExplanationSummary || '(매칭된 용어 해석 자료 없음)'}
   return outputText.trim();
 }
 
-// ───── OpenAI 응답 텍스트 추출 ─────
-function extractOpenAIText(body) {
-  if (body.output_text) return String(body.output_text).trim();
-
-  if (!body.output || !Array.isArray(body.output)) return '';
+// ───── Claude 응답 텍스트 추출 ─────
+function extractClaudeText(body) {
+  if (!body.content || !Array.isArray(body.content)) return '';
 
   const parts = [];
-  body.output.forEach(item => {
-    if (!item.content || !Array.isArray(item.content)) return;
-    item.content.forEach(content => {
-      if (content.text) parts.push(String(content.text));
-    });
+  body.content.forEach(content => {
+    if (content.type === 'text' && content.text) {
+      parts.push(String(content.text));
+    }
   });
 
   return parts.join('\n').trim();
