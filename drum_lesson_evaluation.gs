@@ -58,7 +58,6 @@ function generateSelectedDrumEvaluation() {
     const currentDraft = String(targetRow[COL.레슨평가_초안] || '').trim();
 
     if (!uid) throw new Error('선택한 행에 고유번호가 없습니다.');
-    if (!lessonName.includes('드럼')) throw new Error('선택한 행의 수업명이 드럼 수업이 아닙니다.');
 
     if (currentDraft) {
       const overwrite = ui.alert(
@@ -68,18 +67,23 @@ function generateSelectedDrumEvaluation() {
       if (overwrite !== ui.Button.YES) return;
     }
 
-    const curriculumSS = SpreadsheetApp.openById(CURRICULUM_SHEET_ID);
-    const curriculumSheet = curriculumSS.getSheetByName(CURRICULUM_TAB);
-    if (!curriculumSheet) throw new Error(`"${CURRICULUM_TAB}" 탭을 찾을 수 없습니다.`);
-
-    const curriculum = loadCurriculum(curriculumSheet);
     const recentLessons = getRecentLessons(allData, COL, uid, targetIdx);
     if (recentLessons.length === 0) {
       throw new Error('선택한 학생의 최근 수업기록을 찾을 수 없습니다.');
     }
 
-    const matchedSteps = matchCurriculum(recentLessons, curriculum);
-    const draft = callOpenAIAPI(recentLessons, matchedSteps, curriculum);
+    const isDrumLesson = lessonName.includes('드럼');
+    let matchedSteps = [];
+    if (isDrumLesson) {
+      const curriculumSS = SpreadsheetApp.openById(CURRICULUM_SHEET_ID);
+      const curriculumSheet = curriculumSS.getSheetByName(CURRICULUM_TAB);
+      if (!curriculumSheet) throw new Error(`"${CURRICULUM_TAB}" 탭을 찾을 수 없습니다.`);
+
+      const curriculum = loadCurriculum(curriculumSheet);
+      matchedSteps = matchCurriculum(recentLessons, curriculum);
+    }
+
+    const draft = callOpenAIAPI(recentLessons, matchedSteps, lessonName);
 
     activeSheet.getRange(selectedRow, COL.레슨평가_초안 + 1).setValue(draft);
     SpreadsheetApp.flush();
@@ -101,10 +105,6 @@ function generateDrumEvaluations() {
     const attendanceSheet = attendanceSS.getSheetByName(ATTENDANCE_TAB);
     if (!attendanceSheet) throw new Error(`"${ATTENDANCE_TAB}" 탭을 찾을 수 없습니다.`);
 
-    const curriculumSS    = SpreadsheetApp.openById(CURRICULUM_SHEET_ID);
-    const curriculumSheet = curriculumSS.getSheetByName(CURRICULUM_TAB);
-    if (!curriculumSheet) throw new Error(`"${CURRICULUM_TAB}" 탭을 찾을 수 없습니다.`);
-
     // 1. 헤더 파싱
     const headers = attendanceSheet.getRange(1, 1, 1, attendanceSheet.getLastColumn())
       .getValues()[0]
@@ -120,13 +120,13 @@ function generateDrumEvaluations() {
     const allData   = dataRange.getValues();
 
     // 3. 커리큘럼 읽기
-    const curriculum = loadCurriculum(curriculumSheet);
+    let curriculum = null;
 
     // 4. 대상 행 필터링
     const targets = findTargetRows(allData, COL);
 
     if (targets.length === 0) {
-      ui.alert('처리할 대상 행이 없습니다.\n(드럼 수업, 진행회차 4의 배수, 레슨평가_초안 비어있음, 고유번호 있음)');
+      ui.alert('처리할 대상 행이 없습니다.\n(진행회차 4의 배수, 레슨평가_초안 비어있음, 고유번호 있음)');
       return;
     }
 
@@ -144,15 +144,26 @@ function generateDrumEvaluations() {
       try {
         const targetRow = allData[targetIdx];
         const uid       = String(targetRow[COL.고유번호]).trim();
+        const lessonName = String(targetRow[COL.수업명] || '').trim();
 
         // 5. 같은 고유번호의 최근 4회 수업기록 수집
         const recentLessons = getRecentLessons(allData, COL, uid, targetIdx);
 
-        // 6. 커리큘럼 매칭
-        const matchedSteps = matchCurriculum(recentLessons, curriculum);
+        // 6. 드럼 수업만 커리큘럼 매칭
+        let matchedSteps = [];
+        if (lessonName.includes('드럼')) {
+          if (!curriculum) {
+            const curriculumSS = SpreadsheetApp.openById(CURRICULUM_SHEET_ID);
+            const curriculumSheet = curriculumSS.getSheetByName(CURRICULUM_TAB);
+            if (!curriculumSheet) throw new Error(`"${CURRICULUM_TAB}" 탭을 찾을 수 없습니다.`);
+            curriculum = loadCurriculum(curriculumSheet);
+          }
+
+          matchedSteps = matchCurriculum(recentLessons, curriculum);
+        }
 
         // 7. AI 초안 생성
-        const draft = callOpenAIAPI(recentLessons, matchedSteps, curriculum);
+        const draft = callOpenAIAPI(recentLessons, matchedSteps, lessonName);
 
         // 8. 출석부에 저장 (row index → sheet row: +2 because 1-indexed and header)
         const sheetRow = targetIdx + 2;
@@ -207,13 +218,11 @@ function buildColIndex(headers) {
 function findTargetRows(allData, COL) {
   const targets = [];
   allData.forEach((row, i) => {
-    const lessonName   = String(row[COL.수업명] || '').trim();
     const seq          = Number(row[COL.진행회차]);
     const draftExists  = String(row[COL.레슨평가_초안] || '').trim();
     const uid          = String(row[COL.고유번호] || '').trim();
 
     if (
-      lessonName.includes('드럼') &&
       seq > 0 &&
       seq % 4 === 0 &&
       draftExists === '' &&
@@ -380,8 +389,9 @@ function normalizeMatchText(text) {
 }
 
 // ───── Claude API 호출 ─────
-function callOpenAIAPI(lessons, matchedSteps, curriculum) {
+function callOpenAIAPI(lessons, matchedSteps, lessonName) {
   const apiKey = getApiKey();
+  const isDrumLesson = String(lessonName || '').includes('드럼');
 
   const lessonSummary = lessons.map((l, i) =>
     `[${i + 1}회] 날짜:${l.date} 수업내용:${l.content} 수업곡:${l.song} 과제:${l.homework} 기존평가:${l.eval}`
@@ -391,7 +401,7 @@ function callOpenAIAPI(lessons, matchedSteps, curriculum) {
     `매칭단계: ${s.step} ${s.stepName}\n출석부에서 발견된 용어: ${(s.matchedKeywords || []).join(', ') || '없음'}\n기본기 용어 해석: ${s.basicEasy}\n시퀀스/셀/그루브/필인 해석: ${s.sequenceEasy}\n수업내용 해석 포인트: ${s.interpretPoint}\n평가서에 풀어쓸 문장: ${s.evalSentence}\n다음 수업 방향 문장: ${s.futureSentence}`
   ).join('\n\n');
 
-  const prompt = `당신은 드럼 레슨 기록을 학부모와 성인회원 모두에게 자연스러운 짧은 레슨 리포트로 바꾸는 작성자입니다.
+  const prompt = isDrumLesson ? `당신은 드럼 레슨 기록을 학부모와 성인회원 모두에게 자연스러운 짧은 레슨 리포트로 바꾸는 작성자입니다.
 핵심은 많이 설명하는 것이 아니라, 수업기록에 적힌 각 연습을 정확히 구분하고 "무엇을 하고 있는지, 무엇을 위해 하고 있는지, 다음에 무엇을 이어갈지"를 함축적으로 정리하는 것입니다.
 
 【최근 수업기록】
@@ -434,6 +444,38 @@ ${termExplanationSummary || '(매칭된 용어 해석 자료 없음)'}
 - "리듬감이 좋아졌습니다", "안정적인 연주력이 기대됩니다" 같은 일반 표현
 - "기본 드럼 패턴", "기본 리듬", "기본기"만 단독으로 쓰는 표현
 - 서로 관련 없는 연습을 하나의 흐름처럼 엮는 표현
+- 수업기록에 없는 칭찬
+- 제목, 번호, 분석 과정` : `당신은 음악 레슨 기록을 학부모와 성인회원 모두에게 자연스러운 짧은 레슨 리포트로 바꾸는 작성자입니다.
+핵심은 최근 4회 수업기록을 바탕으로 "무엇을 배웠는지, 어떤 변화가 있었는지, 다음 수업에서 무엇을 이어갈지"를 짧고 정확하게 요약하는 것입니다.
+
+【수업명】
+${lessonName || '(수업명 없음)'}
+
+【최근 4회 수업기록】
+${lessonSummary}
+
+【출력 형식】
+- 총 2문단만 작성합니다.
+- 각 문단은 1문장만 작성합니다.
+- 전체 150~230자 내외로 작성합니다.
+- 첫 문단: 최근 4회 동안 다룬 핵심 수업 내용과 연습 목적.
+- 둘째 문단: 실제 변화 또는 현재 필요한 부분 1개 + 다음 수업 방향 1개.
+- 평가 초안 본문만 출력합니다.
+
+【작성 규칙】
+- 반드시 정중한 존댓말로 작성합니다.
+- 모든 문장은 "습니다", "합니다", "필요합니다", "예정입니다", "지도하겠습니다" 중 하나처럼 존댓말로 끝냅니다.
+- 학생 이름, 회원 이름을 쓰지 마세요.
+- "학생은", "회원은", "수강생은" 같은 주어를 쓰지 마세요.
+- "최근 수업에서는", "최근 4회의 수업에서", "이번 기간 동안", "수업을 통해"로 시작하지 마세요.
+- 수업기록에 없는 실력 향상이나 칭찬을 만들어내지 마세요.
+- 여러 수업 내용을 억지로 하나의 원인과 결과처럼 묶지 말고, 자연스럽게 요약하세요.
+- 다음 수업 방향은 기록상 가장 중요한 내용 1개만 선택하세요.
+
+【금지】
+- 3문단 이상
+- 5문장 이상
+- "리듬감이 좋아졌습니다", "안정적인 실력이 기대됩니다" 같은 일반 표현
 - 수업기록에 없는 칭찬
 - 제목, 번호, 분석 과정`;
 
